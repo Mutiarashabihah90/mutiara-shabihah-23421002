@@ -1,0 +1,387 @@
+# ============================================================
+# KODE WEBCAM LENGKAP: REAL-TIME DETEKSI & AUTO-SAVE KE DRIVE
+# (MODIFIKASI: SAVE CROP 50x50 & JSON METADATA)
+# ============================================================
+
+# --- 1. SETUP DAN IMPORTS ---
+# !pip install -q opencv-python-headless
+from IPython.display import HTML, display, Javascript
+from google.colab import output
+# MOUNT GOOGLE DRIVE
+from google.colab import drive
+print("Mencoba melakukan Mount Google Drive...")
+drive.mount('/content/drive', force_remount=True)
+print("✅ Google Drive Mounted")
+
+import cv2, base64, numpy as np
+import matplotlib.pyplot as plt
+import os
+import datetime
+import time
+import json # Tambahkan import untuk JSON
+
+# Ukuran target untuk wajah yang dipotong
+TARGET_SIZE = (50, 50)
+
+# ====== KONSTANTA UNTUK AUTO-SAVE ======
+# Simpan foto ke Drive setiap 10 detik
+SAVE_INTERVAL_SEC = 10
+# Path folder di Google Drive (DIUBAH untuk crop 50x50)
+BASE_DRIVE_PATH = "/content/drive/MyDrive/captured_faces_50x50" # Path Baru
+
+# Variabel untuk melacak waktu penyimpanan terakhir (Global)
+last_save_time = time.time()
+# ============================================
+
+
+# ====== Download Haarcascade jika tidak ada ======
+haarcascade_path = "haarcascade_frontalface_default.xml"
+if not os.path.exists(haarcascade_path):
+    print("Mendownload Haarcascade...")
+    !wget -q https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml -O haarcascade_frontalface_default.xml
+    print("✅ Download Selesai")
+
+face_cascade = cv2.CascadeClassifier(haarcascade_path)
+
+
+# --- 2. FUNGSI PYTHON CALLBACK (Termasuk Real-Time dengan Auto-Save) ---
+
+def decode_image(data_url):
+    """Mendekode string base64 data_url menjadi objek gambar OpenCV (numpy array)."""
+    if "," in data_url:
+        header, encoded = data_url.split(",", 1)
+    else:
+        encoded = data_url
+    img_bytes = base64.b64decode(encoded)
+    img_arr = np.frombuffer(img_bytes, np.uint8)
+    img = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
+    return img
+
+# 1. Deteksi Wajah, Crop 50x50, dan Tampilkan Nama "Orang" (Single-Shot) - TIDAK DIUBAH
+def detect_and_crop(data_url):
+    img = decode_image(data_url)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    faces = face_cascade.detectMultiScale(gray, 1.3, 5)
+
+    output.clear(wait=True)
+    cropped_faces = []
+    if len(faces) > 0:
+        display(HTML("<h3 style='color:green'>Deteksi wajah berhasil ✔ (Orang)</h3>"))
+        for (x, y, w, h) in faces:
+            cv2.rectangle(img, (x,y), (x+w, y+h), (0,255,0), 2)
+            name = "Orang"
+            cv2.rectangle(img, (x, y - 30), (x + w, y), (0, 255, 0), cv2.FILLED)
+            cv2.putText(img, name, (x + 6, y - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 0), 2)
+            face_crop = img[y:y+h, x:x+w]
+            face_resized = cv2.resize(face_crop, TARGET_SIZE, interpolation=cv2.INTER_AREA)
+            cropped_faces.append(cv2.cvtColor(face_resized, cv2.COLOR_BGR2RGB))
+    else:
+        display(HTML("<h3 style='color:orange'>Tidak ada wajah terdeteksi 😞</h3>"))
+
+    num_plots = len(cropped_faces) + 1
+    fig, axes = plt.subplots(1, num_plots, figsize=(4 * num_plots, 5))
+    ax_main = axes[0] if num_plots > 1 else plt.gca()
+    ax_main.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    ax_main.set_title("Gambar Asli (Deteksi Orang)")
+    ax_main.axis('off')
+    for i, face in enumerate(cropped_faces):
+        axes[i+1].imshow(face)
+        axes[i+1].set_title(f"Crop {TARGET_SIZE[0]}x{TARGET_SIZE[1]}")
+        axes[i+1].axis('off')
+    plt.tight_layout()
+    plt.show()
+
+# 2. Simpan Foto (Single-Shot) - KE GOOGLE DRIVE - TIDAK DIUBAH
+def save_photo(data_url):
+    img = decode_image(data_url)
+
+    # --- LOGIKA PENYIMPANAN KE DRIVE ---
+    output_folder = BASE_DRIVE_PATH # Menggunakan BASE_DRIVE_PATH baru
+
+    output.clear(wait=True)
+
+    if not os.path.exists(output_folder):
+        try:
+            os.makedirs(output_folder, exist_ok=True)
+        except Exception as e:
+            display(HTML(f"<h3 style='color:red'>Gagal menyimpan ke Drive! ❌</h3><p>Tidak dapat membuat folder: {e}</p>"))
+            return
+
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"captured_photo_{timestamp}.jpg"
+    filepath = os.path.join(output_folder, filename)
+
+    try:
+        cv2.imwrite(filepath, img)
+        display(HTML(f"<h3 style='color:blue'>Foto berhasil disimpan ke Google Drive: {filepath} 💾</h3>"))
+    except Exception as e:
+        display(HTML(f"<h3 style='color:red'>Gagal menyimpan file ke Drive! ❌</h3><p>Terjadi error saat penulisan file: {e}</p>"))
+
+    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    plt.figure(figsize=(4,3))
+    plt.imshow(img_rgb)
+    plt.axis('off')
+    plt.title("Foto Tersimpan")
+    plt.show()
+
+# 3. Recognize Wajah (Grayscale) (Single-Shot) - TIDAK DIUBAH
+def recognize_grayscale(data_url):
+    img = decode_image(data_url)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    faces = face_cascade.detectMultiScale(gray, 1.3, 5)
+
+    output.clear(wait=True)
+    recognized_and_cropped_faces_gs = []
+    if len(faces) > 0:
+        display(HTML("<h3 style='color:purple'>Memproses pengenalan wajah...</h3>"))
+        recognized_name = "Orang"
+        display(HTML(f"<h3 style='color:darkgreen'>Wajah dikenali sebagai: {recognized_name} 👋 (Grayscale)</h3>"))
+        for (x, y, w, h) in faces:
+            cv2.rectangle(img, (x,y), (x+w, y+h), (255,0,255), 2)
+            cv2.rectangle(img, (x, y - 30), (x + w, y), (255, 0, 255), cv2.FILLED)
+            cv2.putText(img, recognized_name, (x + 6, y - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
+            face_crop = img[y:y+h, x:x+w]
+            face_resized = cv2.resize(face_crop, TARGET_SIZE, interpolation=cv2.INTER_AREA)
+            face_grayscale = cv2.cvtColor(face_resized, cv2.COLOR_BGR2GRAY)
+            recognized_and_cropped_faces_gs.append(face_grayscale)
+    else:
+        display(HTML("<h3 style='color:orange'>Tidak ada wajah terdeteksi untuk dikenali 😞</h3>"))
+
+    num_plots = len(recognized_and_cropped_faces_gs) + 1
+    fig, axes = plt.subplots(1, num_plots, figsize=(4 * num_plots, 5))
+    ax_main = axes[0] if num_plots > 1 else plt.gca()
+    ax_main.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    ax_main.set_title("Gambar Asli (Pengenalan Orang)")
+    ax_main.axis('off')
+    for i, face_gs in enumerate(recognized_and_cropped_faces_gs):
+        axes[i+1].imshow(face_gs, cmap='gray')
+        axes[i+1].set_title(f"Recognized Crop {TARGET_SIZE[0]}x{TARGET_SIZE[1]} (GS)")
+        axes[i+1].axis('off')
+    plt.tight_layout()
+    plt.show()
+
+# 4. FUNGSI REAL-TIME DISPLAY (DENGAN AUTO-SAVE - DIUBAH UNTUK SAVE CROP 50x50 & JSON)
+def realtime_display(data_url):
+    """Fungsi untuk deteksi dan display real-time, termasuk auto-save (crop 50x50 dan json metadata)."""
+    global last_save_time
+
+    try:
+        img = decode_image(data_url)
+    except Exception:
+        return
+
+    # Pemrosesan Deteksi OpenCV
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+
+    name = "Orang (Realtime)"
+
+    if len(faces) > 0:
+        # --- LOGIKA AUTO-SAVE KE DRIVE (MODIFIKASI) ---
+        current_time = time.time()
+        # Cek apakah sudah waktunya menyimpan DAN wajah terdeteksi
+        if current_time - last_save_time >= SAVE_INTERVAL_SEC:
+
+            if not os.path.exists(BASE_DRIVE_PATH):
+                # Buat folder jika belum ada
+                os.makedirs(BASE_DRIVE_PATH, exist_ok=True)
+                print(f"Folder Drive dibuat: {BASE_DRIVE_PATH}")
+
+            # Ambil wajah pertama untuk disimpan
+            (x, y, w, h) = faces[0]
+            face_crop = img[y:y+h, x:x+w]
+            # Ubah ukuran menjadi 50x50
+            face_resized = cv2.resize(face_crop, TARGET_SIZE, interpolation=cv2.INTER_AREA)
+
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            # Nama file JPG untuk crop 50x50
+            filename_img = f"auto_crop_{timestamp}.jpg"
+            filepath_img = os.path.join(BASE_DRIVE_PATH, filename_img)
+            # Nama file JSON untuk metadata
+            filename_json = f"auto_crop_{timestamp}.json"
+            filepath_json = os.path.join(BASE_DRIVE_PATH, filename_json)
+            
+            # Data JSON yang akan disimpan
+            metadata = {
+                "timestamp": timestamp,
+                "original_filename": filename_img,
+                "crop_size": f"{TARGET_SIZE[0]}x{TARGET_SIZE[1]}",
+                "original_detection_box": [int(x), int(y), int(w), int(h)],
+                "status": "face_detected_and_cropped"
+            }
+
+            try:
+                # 1. Simpan Gambar Crop 50x50
+                cv2.imwrite(filepath_img, face_resized)
+                
+                # 2. Simpan File JSON
+                with open(filepath_json, 'w') as f:
+                    json.dump(metadata, f, indent=4)
+                    
+                last_save_time = current_time
+                # Tampilkan pesan di konsol Colab
+                print(f"✅ Auto-Saved Crop 50x50 ke {BASE_DRIVE_PATH}: {filename_img} & {filename_json}")
+            except Exception as e:
+                # Ini mungkin terjadi jika Drive mengalami error I/O sementara
+                print(f"❌ Gagal Auto-Save ke Drive: {e}")
+        # -----------------------------------
+
+        # Gambar kotak merah dan nama untuk mode Realtime (di gambar original)
+        for (x, y, w, h) in faces:
+            cv2.rectangle(img, (x,y), (x+w, y+h), (255,0,0), 2)
+            cv2.rectangle(img, (x, y - 30), (x + w, y), (255, 0, 0), cv2.FILLED)
+            cv2.putText(img, name, (x + 6, y - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
+
+    # Konversi ke base64 (Kualitas 70% untuk speed)
+    _, buffer = cv2.imencode('.jpeg', img, [cv2.IMWRITE_JPEG_QUALITY, 70])
+    img_base64 = base64.b64encode(buffer).decode('utf-8')
+
+    # Perbarui elemen output menggunakan JavaScript
+    display(Javascript(f"""
+        const outputImg = document.getElementById('output_frame');
+        if (outputImg) {{
+            outputImg.src = 'data:image/jpeg;base64,{img_base64}';
+        }}
+    """))
+
+
+# --- 3. REGISTER CALLBACKS ---
+output.register_callback('notebook.detect_and_crop', detect_and_crop)
+output.register_callback('notebook.save', save_photo)
+output.register_callback('notebook.recognize_grayscale', recognize_grayscale)
+output.register_callback('notebook.realtime_display', realtime_display)
+
+
+# --- 4. HTML DAN JAVASCRIPT UNTUK WEBCAM DAN TOMBOL ---
+# HTML dan JS tidak diubah karena fungsi callback Python yang diubah.
+
+html_buttons_simplified = """
+<style>
+#video { display: block; border:3px solid black; margin-top:10px; width:480px; height:360px; }
+#output_frame { display: none; border:3px solid red; margin-top:10px; width:480px; height:360px; }
+button { padding:10px; margin:5px; font-size:14px; cursor: pointer; }
+</style>
+
+<div id='webcam_container'>
+    <video id="video" autoplay playsinline width="480" height="360"></video>
+    <img id="output_frame" src="data:image/jpeg;base64," />
+</div>
+<br>
+
+<button onclick="captureFrame('detect_and_crop')">🔍 Deteksi & Crop 50x50</button>
+<button onclick="captureFrame('save')">💾 Save Foto ke Drive</button>
+<button onclick="captureFrame('recognize_grayscale')">🧑‍💻 Recognize Wajah (Grayscale)</button>
+<br>
+
+<button onclick="stopCam()">⏹ Stop Camera</button>
+"""
+
+js_script_simplified = """
+let stream;
+let video = document.getElementById('video');
+let intervalId = null;
+const FPS = 10;
+
+function stopRealtime(){
+    if(intervalId){
+        clearInterval(intervalId);
+        intervalId = null;
+        console.log("Deteksi Real-Time dihentikan.");
+    }
+}
+
+async function startRealtime(){
+    if(intervalId) return;
+
+    document.getElementById('video').style.display = 'none';
+    document.getElementById('output_frame').style.display = 'block';
+
+    intervalId = setInterval(captureFrameForRealtime, 1000 / FPS);
+    console.log("Deteksi Real-Time dimulai.");
+}
+
+
+async function startCam(){
+    const constraints = { video: {width: 480, height: 360} };
+    try {
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+        video.srcObject = stream;
+        video.play();
+        console.log("Kamera aktif.");
+
+        await new Promise(resolve => setTimeout(resolve, 500));
+        startRealtime();
+
+    } catch(e) {
+        alert("Gagal mengakses kamera. Pastikan izin kamera diberikan. Error: " + e.message);
+        console.error(e);
+    }
+}
+
+function stopCam(){
+    stopRealtime();
+    if(stream){
+        stream.getTracks().forEach(t=>t.stop());
+        stream = null;
+    }
+    const videoElement = document.getElementById('video');
+    const outputFrame = document.getElementById('output_frame');
+
+    if (videoElement) {
+        videoElement.style.display = 'block';
+        videoElement.srcObject = null;
+    }
+    if (outputFrame) {
+        outputFrame.style.display = 'none';
+        outputFrame.src = 'data:image/jpeg;base64,';
+    }
+}
+
+function captureFrame(action){
+    stopRealtime();
+
+    document.getElementById('video').style.display = 'block';
+    document.getElementById('output_frame').style.display = 'none';
+
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext("2d").drawImage(video, 0, 0);
+
+    let py_func = 'notebook.' + action;
+
+    google.colab.kernel.invokeFunction(
+        py_func,
+        [canvas.toDataURL("image/jpeg", 0.9)],
+        {}
+    );
+}
+
+function captureFrameForRealtime(){
+    if (!stream || !video.srcObject) return;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext("2d").drawImage(video, 0, 0, video.videoWidth, video.videoHeight);
+
+    google.colab.kernel.invokeFunction(
+        'notebook.realtime_display',
+        [canvas.toDataURL("image/jpeg", 0.7)],
+        {}
+    );
+}
+
+
+startCam();
+window.onbeforeunload = stopCam;
+"""
+
+# Menampilkan HTML dan menjalankan JavaScript
+display(HTML(html_buttons_simplified))
+display(Javascript(js_script_simplified))
+
+print("---")
+print("✅ READY: Kamera aktif. Deteksi Real-Time wajah (Orang) otomatis aktif.")
+print(f"ℹ Auto-Save ke Drive aktif. Foto **crop 50x50** dan **metadata JSON** disimpan di **{BASE_DRIVE_PATH}** setiap **{SAVE_INTERVAL_SEC} detik** saat wajah terdeteksi.")
+print("ℹ Real-Time akan berhenti secara otomatis saat tombol Single-Shot ditekan.")
